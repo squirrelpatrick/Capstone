@@ -258,3 +258,106 @@ final_tables <- final_tables[,c(3,1,21,2,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,
 # write to file
 
 write.csv(final_tables, file = "final_tables.csv")
+
+
+# create features for analysis
+
+# simple to start with
+# ratios of H/D/L games won for home team and away team in current season
+
+premiership2 <- premiership2 %>%
+  mutate(Team1HomeP = Team1HomeW + Team1HomeD + Team1HomeL,
+          Team1AwayP = Team1AwayW + Team1AwayD + Team1AwayL,
+          Team2HomeP = Team2HomeW + Team2HomeD + Team2HomeL,                 
+          Team2AwayP = Team2AwayW + Team2AwayD + Team2AwayL,
+          T1HWr = Team1HomeW / Team1HomeP, # 'Team1HomeWinRatio'
+          T1HDr = Team1HomeD / Team1HomeP, # 'Team1HomeDrawRatio'
+          T1HLr = Team1HomeL / Team1HomeP, # 'Team1HomeLossRatio'
+          T1AWr = Team1AwayW / Team1AwayP, # 'Team1AwayWinRatio'
+          T1ADr = Team1AwayD / Team1AwayP, # 'Team1AwayDrawRatio'
+         
+          T1ALr = Team1AwayL / Team1AwayP, # 'Team1AwayLossRatio'
+          T2HWr = Team2HomeW / Team2HomeP, # 'Team2HomeWinRatio'
+          T2HDr = Team2HomeD / Team2HomeP, # 'Team2HomeDrawRatio'
+          T2HLr = Team2HomeL / Team2HomeP, # 'Team2HomeLossRatio'
+          T2AWr = Team2AwayW / Team2AwayP, # 'Team2AwayWinRatio'
+          T2ADr = Team2AwayD / Team2AwayP, # 'Team2AwayDrawTaio'
+          T2ALr = Team2AwayL / Team2AwayP  # 'Team2AwayLossRatio'
+  )
+
+# create dummy variables
+premiership2 <- premiership2 %>%
+        mutate(ResH = as.integer(FTR == "H"), # 'Home Win'
+               ResD = as.integer(FTR == "D"), # 'Draw'
+               ResA = as.integer(FTR == "A")  # 'Away Win'
+        )
+
+# attempt first logistic regression!
+model0 <- glm(ResH ~ 0, data = premiership2, family = "binomial")
+model1 <- glm(ResH ~ T1HWr, data = premiership2, family = "binomial")
+model2 <- glm(ResH ~ T1HWr + T2ALr, data = premiership2, family = "binomial")
+model3 <- glm(ResH ~ T1HWr + T1HDr + T1AWr + T1ADr + T2HLr + T2HDr + T2ALr + T2ADr, data = premiership2, family = "binomial")
+premiershipF5 <- filter(premiership2, Team1P >= 5, Team2P >= 5)
+model4 <- glm(ResH ~ T1HWr + T1HDr + T1AWr + T1ADr + T2HLr + T2HDr + T2ALr + T2ADr, data = premiershipF5, family = "binomial")
+premiershipF10 <- filter(premiership2, Team1P >= 10, Team2P >= 10)
+model5 <- glm(ResH ~ T1HWr + T1HDr + T1AWr + T1ADr + T2HLr + T2HDr + T2ALr + T2ADr, data = premiershipF10, family = "binomial")
+premiershipF15 <- filter(premiership2, Team1P >= 15, Team2P >= 15)
+model6 <- glm(ResH ~ T1HWr + T1HDr + T1AWr + T1ADr + T2HLr + T2HDr + T2ALr + T2ADr, data = premiershipF15, family = "binomial")
+premiershipF20 <- filter(premiership2, Team1P >= 15, Team2P >= 15)
+model7 <- glm(ResH ~ T1HWr + T1HDr + T1AWr + T1ADr + T2HLr + T2HDr + T2ALr + T2ADr, data = premiershipF20, family = "binomial")
+
+# model 6 & 7 look pretty similar
+predict(model7, premiership2[6827,], type="response")
+
+#interesting result that the away form of the away team
+# appears more significant than the other weightings
+
+# attempting to incorporate goal differences
+# create ratio columns
+
+premiership2 <- premiership2 %>%
+                mutate(T1GDr = Team1GD/Team1P,
+                       T2GDr = Team2GD/Team1P
+                       )
+
+#run filter again
+premiershipF15 <- filter(premiership2, Team1P >= 15, Team2P >= 15)
+
+model8 <- glm(ResH ~ T1HWr + T1HDr + T1AWr + T1ADr + 
+              T2HLr + T2HDr + T2ALr + T2ADr + 
+                T1GDr + T2GDr,
+              data = premiershipF15, family = "binomial")
+
+# interesting in that GD appears to be more important to measure Team1 form than win/draw %
+# see what happens when removing win/draw % for team1
+
+model9 <- glm(ResH ~ T2HLr + T2HDr + T2ALr + T2ADr + T1GDr + T2GDr,
+              data = premiershipF15, family = "binomial")
+
+
+# lower AIC!
+
+# try relying on goal difference for Team2
+model10 <- glm(ResH ~ T1GDr + T2GDr,
+              data = premiershipF15, family = "binomial")
+
+seems best!
+
+# let's plot the results
+library(ggplot2)
+ggplot(premiership2, aes(x = T1GDr, y = T2GDr, col = ResH)) +
+  geom_point()
+
+# nice but plot not too clear. Let's do a 2D probability density plot using the hexbin package.
+install.packages("hexbin")
+library(hexbin)
+my.colors <- function (n) {
+  rev(heat.colors(n))
+}
+hexbinplot(T1GDr ~ T2GDr, data = premiership2, colramp = my.colors, 
+           colorcut = seq(0, 1, length = 10))
+
+# that didn't work :D! We don't want a count of the points, 
+# want the aggregated probability of success in the region
+
+
