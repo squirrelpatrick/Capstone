@@ -1,5 +1,8 @@
 # Initialisation
 library("dplyr")
+library(rpart)
+library(xgboost)
+library(randomForest)
 setwd("~patrickmcguinness/downloads")
 
 # PHASE 1
@@ -341,23 +344,245 @@ model9 <- glm(ResH ~ T2HLr + T2HDr + T2ALr + T2ADr + T1GDr + T2GDr,
 model10 <- glm(ResH ~ T1GDr + T2GDr,
               data = premiershipF15, family = "binomial")
 
-seems best!
+# seems best!
 
-# let's plot the results
-library(ggplot2)
-ggplot(premiership2, aes(x = T1GDr, y = T2GDr, col = ResH)) +
-  geom_point()
 
-# nice but plot not too clear. Let's do a 2D probability density plot using the hexbin package.
-install.packages("hexbin")
-library(hexbin)
-my.colors <- function (n) {
-  rev(heat.colors(n))
+# define goal ratio as log ratio of goals scored / goals against
+premiership2 <- premiership2 %>%
+                mutate(Team1GF = Team1HomeGF + Team1AwayGF,
+                        Team1GA = Team1AwayGF + Team1AwayGA,
+                        Team2GF = Team2HomeGF + Team2AwayGF,
+                        Team2GA = Team2HomeGA + Team2AwayGA,
+                       T1Glr = log(Team1GF / Team1GA), #Team1 Goals Log Ratio
+                       T2Glr = log(Team2GF / Team2GA) #Team2 Goals Log Ratio
+                )
+
+# filter
+premiershipF15 <- filter(premiership2, Team1P >= 15, Team2P >= 15)
+
+model11 <- glm(ResH ~ T1GDr + T2GDr + T1Glr + T2Glr ,
+               data = premiershipF15, family = "binomial")
+# at best little improvement AIC is worse
+
+# appears that just considering the average goal difference per game for each team provides 
+# a simple but reasonable model
+
+# even simpler? combining the two?
+
+premiership2 <- premiership2 %>%
+                mutate(GDrdiff = T1GDr - T2GDr) # Goal Difference ratio difference
+
+premiershipF15 <- filter(premiership2, Team1P >= 15, Team2P >= 15)
+
+model12 <- glm(ResH ~ GDrdiff, data = premiershipF15, family = "binomial")
+
+model12
+
+# yes, lower AIC
+
+# try co-dependence
+model13 <- glm(ResH ~ GDrdiff + T1GDr:T2GDr, data = premiershipF15, 
+               family = "binomial")
+model13 #no improvement
+
+# let's bring in last season's data.
+final_tables_lookup <- final_tables %>%
+                        mutate(GDr = GD/Played)
+final_tables_lookup$Season = final_tables_lookup$Season + 1
+
+                        
+#GDr - "Goal Difference ratio"
+                        
+premiership3 <- final_tables_lookup %>%
+                select(Season, Team, GDr) %>%
+                rename(HomeTeam = Team, T1GDrLS = GDr) %>%
+                right_join(premiership2, by = c("Season", "HomeTeam"))
+
+premiership3 <- final_tables_lookup %>%
+                select(Season, Team, GDr) %>%
+                rename(AwayTeam = Team, T2GDrLS = GDr) %>%
+                right_join(premiership3, by = c("Season", "AwayTeam")) %>%
+                mutate(GDrdiffLS = T1GDrLS - T2GDrLS)
+
+# works! Noting we have lots of NAs from the first season which had no predecessor
+# and also for the promoted teams in subsequent seasons.
+
+# filter
+premiership3F15 <- filter(premiership3, Team1P >= 15, Team2P >= 15)
+model12 <- glm(ResH ~ GDrdiff + GDrdiffLS, data = premiership3F15, family = "binomial")
+model13 <- glm(ResH ~ GDrdiff, data = filter(premiership3F15, !is.na(GDrdiffLS)), family = "binomial")
+model12
+model13
+
+# inclusion of last season provides big improvement!
+
+# we have quite a lot of missing data, 
+# let's convert the NAs for promoted teams
+# by taking the mean GD for the relegated teams
+
+relegations <- final_tables %>%
+                cbind(relegated = c(rep(FALSE, 17), rep(TRUE,3))) %>%
+                filter(relegated)
+
+relegationsGD <- relegations %>%
+                  group_by(Season) %>%
+                  summarise(meanGDr = mean(GD)/38)
+
+relegationsGD$Season <- relegationsGD$Season + 1
+
+# add the replacement value onto premiership 3 for all matches
+# create premiership4
+
+premiership4 <- left_join(premiership3, relegationsGD, by = "Season")
+premiership4$T1GDrLS[is.na(premiership4$T1GDrLS)] <- premiership4$meanGDr[is.na(premiership4$T1GDrLS)]
+premiership4$T2GDrLS[is.na(premiership4$T2GDrLS)] <- premiership4$meanGDr[is.na(premiership4$T2GDrLS)]
+premiership4$GDrdiffLS <- premiership4$T1GDrLS - premiership4$T2GDrLS
+# filter fifteen minimum matches
+premiership4F15 <- filter(premiership4, Team1P >= 15, Team2P >= 15)
+model14 <- glm(ResH ~ GDrdiff + GDrdiffLS, data = premiership4F15, family = "binomial")
+
+# looks not bad but interestingly last season weighting has gone down
+# let's try using the mean of the means so the replacement value is the same for all seasons
+premiership5 <- left_join(premiership3, relegationsGD, by = "Season")
+premiership5$T1GDrLS[is.na(premiership5$T1GDrLS) & premiership5$Season > 1] <- mean(relegationsGD$meanGDr)
+premiership5$T2GDrLS[is.na(premiership5$T2GDrLS) & premiership5$Season > 1] <- mean(relegationsGD$meanGDr)
+
+premiership5$GDrdiffLS <- premiership5$T1GDrLS - premiership5$T2GDrLS
+
+# create function F to filter minimum no. of matches
+F <- function(x, y) {filter(x, Team1P >= y & Team2P >= y)}
+
+model15 <- glm(ResH ~ GDrdiff + GDrdiffLS, data = F(premiership5,15), family = "binomial")
+
+# model15 looks slightly better and last season weighting is strong
+# though not as good as before, which makes sense. 
+# Thus, clustering could improve the model - a different model for the NAs
+# refinement could be to create different estimates based on the lower league performances
+
+# go back another season?
+
+final_tables_lookup$Season = final_tables_lookup$Season + 1
+premiership5 <- final_tables_lookup %>%
+  select(Season, Team, GDr) %>%
+  rename(HomeTeam = Team, T1GDrLS2 = GDr) %>%
+  right_join(premiership5, by = c("Season", "HomeTeam"))
+
+premiership5 <- final_tables_lookup %>%
+  select(Season, Team, GDr) %>%
+  rename(AwayTeam = Team, T2GDrLS2 = GDr) %>%
+  right_join(premiership5, by = c("Season", "AwayTeam"))
+
+relegatedGD <- mean(relegationsGD$meanGDr)
+
+indexT1 <- is.na(premiership5$T1GDrLS2) & premiership5$Season >= 3
+premiership5$T1GDrLS2 <- replace(premiership5$T1GDrLS2, indexT1, relegatedGD)
+indexT2 <- is.na(premiership5$T2GDrLS2) & premiership5$Season >= 3
+premiership5$T2GDrLS2 <- replace(premiership5$T2GDrLS2, indexT2, relegatedGD)
+
+premiership5$GDrdiffLS2 <- premiership5$T1GDrLS2 - premiership5$T2GDrLS2
+
+model16 <- glm(ResH ~ GDrdiff + GDrdiffLS + GDrdiffLS2, data = F(premiership5,15), family = "binomial")
+summary(model16)
+
+# splitting into train and test sets
+
+
+
+# good, so it looks like two seasons ago is also useful data but far less so
+# and further back looks unlikely to be helpful.
+
+# RANDOM FOREST MODELS
+
+
+# handling NA values
+# the first matches of the season contain NaN
+# as it cannot compute the goal difference per game
+# solution - impute with zero which is the mean goal difference
+
+premiership6 <- premiership5
+for (i in 1:nrow(premiership6))
+  if (is.na(premiership6$GDrdiff[i])) {premiership5$GDrdiff[i] <- 0}
+
+# for the missing season values we are going to lose the first season
+# for the second season impute GDrdiffLS2 as equal to GDrdiffLS
+
+premiership6 <- filter(premiership6, Season >=2)
+s2 <- premiership6$Season == 2
+premiership6$GDrdiffLS2[s2] <- premiership6$GDrdiffLS[s2]
+
+# eliminate empty factor level and reorder
+# Home Win / Draw / Away Win
+premiership6$FTR <- factor(premiership6$FTR)
+levels(premiership6$FTR) <- c("H", "D", "A")
+
+
+# DEFINING TRAIN AND TEST SETS
+# final validation set will be the last season
+# otherwise train will be 80%
+# test 20% randomly split
+
+
+
+
+validation <- filter(premiership6, Season == 18)
+n <- filter(premiership6, Season != 18) %>%
+            nrow()
+train_index <- sample(1:n, round(n * 0.8))
+test_index <- (1:n)[!((1:n) %in% train_index)]
+train_index <- sort(train_index)
+train <- premiership6[train_index,]
+test <- premiership6[test_index,]
+
+# looks good!
+
+# let's create a decision tree model
+model17 <- rpart(FTR ~ GDrdiff + GDrdiffLS + GDrdiffLS2 + Team1P + 
+                Team2P, data = train, method = "class")
+pred17 <- predict(model17, 
+                  select(test, GDrdiff, GDrdiffLS, GDrdiffLS2, 
+                         Team1P, Team2P), 
+                  type = "prob")
+
+# evaluate log-likelihood on test data
+testLogL <- function(x) {
+  x <- log(x)
+  prod <- x * as.matrix(test[,c( "ResH", "ResD", "ResA")])
+  sum(prod)
 }
-hexbinplot(T1GDr ~ T2GDr, data = premiership2, colramp = my.colors, 
-           colorcut = seq(0, 1, length = 10))
 
-# that didn't work :D! We don't want a count of the points, 
-# want the aggregated probability of success in the region
+# test for decision tree model
+testLogL(pred17)
+# - 1640.966 I expect this can be improved.
+# We want closer to zero
+
+
+# random forest
+
+model18 <- randomForest(FTR ~ GDrdiff + GDrdiffLS + GDrdiffLS2 + Team1P + 
+                        Team2P, data = train, 
+                        ntree = 2000,
+                        type = "regression")
+pred18 <- predict(model18, select(test, GDrdiff, GDrdiffLS, 
+                                  GDrdiffLS2, Team1P, Team2P),
+                                  type = "prob")
+
+# test the model
+testLogL(pred18)
+# substantially worse than the decision tree :D
+# looks like random forest is not a suitable algorithm here.
+
+# let's try a simple logistic model 
+# without the partial season issue accounted for
+
+model19 <- glm(ResH ~ GDrdiff + GDrdiffLS + GDrdiffLS2 + Team1P + Team2P, data = train, family = "binomial")
+summary(model19)
+pred19 <- predict(model19, select(test, GDrdiff, GDrdiffLS, 
+                                  GDrdiffLS2, Team1P, Team2P),
+                  type = "response")
+testLogL(pred19)
+
+# much better! right track!
+
+
 
 
