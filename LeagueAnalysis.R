@@ -975,6 +975,39 @@ cat("Neural Network Validation Set likelihood metric",
     likelihood(NeuralNetVpredictions)
 ) 
 
+
+cat("Summary")
+
+cat("Decision Tree + logistic Regression K-fold likelihood metric",
+    likelihood(premiership7$predicted)
+)
+cat("Decision Tree + Logistic Regression Validation set likelihood metric",
+    likelihood(DTLRVpredictions)
+)
+cat("Decision Tree alone K-fold likelihood metric",
+    likelihood(DecisionTreePredictions)
+)
+cat("Decision Tree alone Validation Set likelihood metric",
+    likelihood(DTVpredictions)
+)
+cat("Random Forest K-fold likelihood metric",
+    likelihood(RandomForestPredictions)
+)
+cat("Random Forest Validation Set likelihood metric",
+    likelihood(RFVpredictions)
+) 
+cat("Logistic Regression K-fold likelihood metric",
+    likelihood(LogiRegPredictions)
+)
+cat("Logistic Regression Validation Set likelihood metric",
+    likelihood(LogiRegVpredictions)
+) 
+cat("NeuralNetwork K-fold likelihood metric",
+    likelihood(NeuralNetPredictions)
+)
+cat("Neural Network Validation Set likelihood metric",
+    likelihood(NeuralNetVpredictions)
+) 
 # Results
 # Logistic Regression seems best on k-fold validation
 # Neural Network performs best on the validation set
